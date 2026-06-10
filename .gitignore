@@ -1,0 +1,18 @@
+# Block heavy genomic data files from uploading to GitHub
+data/ref/*
+data/tumor/*
+data/normal/*
+*.bam
+*.bai
+*.sam
+*.fastq
+*.fastq.gz
+*.fq
+*.fq.gz
+*.vcf
+*.vcf.gz
+
+# Block operating system junk
+.DS_Store
+Thumbs.db
+*.log

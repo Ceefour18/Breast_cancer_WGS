@@ -1,0 +1,9 @@
+{
+  "project_title": "Somatic Variant Analysis of Clinically Relevant Breast Cancer Genes Using Paired Tumor-Normal Whole Genome Sequencing",
+  "cloud_provider": "AWS",
+  "compute_instance": "r6i.4xlarge",
+  "vcpu_count": 16,
+  "ram_gb": 128,
+  "storage_type": "gp3",
+  "storage_size_gib": 500
+}
