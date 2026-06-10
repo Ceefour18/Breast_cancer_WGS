@@ -7,49 +7,88 @@ N_DIR="data/normal"
 OUT_DIR="data/output"
 
 echo "========================================="
-echo "STEP 1: Installing SRA Toolkit & Downloading HCC1395 WGS FASTQs..."
+echo "STEP 1: Installing SRA Toolkit from NCBI..."
 echo "========================================="
 if ! command -v fasterq-dump &>/dev/null; then
-    echo "Installing SRA Toolkit..."
-    sudo apt-get install -y sra-toolkit
+    wget -q https://ftp-trace.ncbi.nlm.nih.gov/sra/sdk/current/sratoolkit.current-ubuntu64.tar.gz -O /tmp/sratoolkit.tar.gz
+    tar -xzf /tmp/sratoolkit.tar.gz -C /tmp
+    sudo cp /tmp/sratoolkit*/bin/* /usr/local/bin/
 fi
 
-# Tumor: HCC1395 breast cancer WGS (SRR7890824)
-echo "Downloading tumor sample (SRR7890824)..."
-prefetch SRR7890824 --location AWS --progress -O "${T_DIR}"
-fasterq-dump "${T_DIR}/SRR7890824/SRR7890824.sra" --outdir "${T_DIR}" --split-files --threads 16
+echo "========================================="
+echo "STEP 2: Pulling Docker Images..."
+echo "========================================="
+sudo docker pull biocontainers/bwa:v0.7.17_cv1
+sudo docker pull broadinstitute/gatk:4.6.0.0
+
+echo "========================================="
+echo "STEP 3: Downloading HCC1395 WGS FASTQs..."
+echo "========================================="
+
+# Tumor: HCC1395 breast cancer WGS (SRR7890824, ~64GB)
+echo "Prefetching tumor sample (SRR7890824)..."
+prefetch SRR7890824 \
+    --location AWS \
+    --progress \
+    -O "${T_DIR}" \
+    --max-size 100GB
+
+echo "Converting tumor SRA to FASTQ..."
+fasterq-dump "${T_DIR}/SRR7890824/" \
+    --outdir "${T_DIR}" \
+    --split-files \
+    --threads 16 \
+    --temp "${T_DIR}" \
+    --progress
+
 mv "${T_DIR}/SRR7890824_1.fastq" "${T_DIR}/tumor_R1.fastq"
 mv "${T_DIR}/SRR7890824_2.fastq" "${T_DIR}/tumor_R2.fastq"
 gzip "${T_DIR}/tumor_R1.fastq" "${T_DIR}/tumor_R2.fastq"
+echo "Tumor FASTQ ready."
 
-# Normal: HCC1395BL matched normal WGS (SRR7890827)
-echo "Downloading normal sample (SRR7890827)..."
-prefetch SRR7890827 --location AWS --progress -O "${N_DIR}"
-fasterq-dump "${N_DIR}/SRR7890827/SRR7890827.sra" --outdir "${N_DIR}" --split-files --threads 16
+# Normal: HCC1395BL matched normal WGS (SRR7890827, ~70GB)
+echo "Prefetching normal sample (SRR7890827)..."
+prefetch SRR7890827 \
+    --location AWS \
+    --progress \
+    -O "${N_DIR}" \
+    --max-size 100GB
+
+echo "Converting normal SRA to FASTQ..."
+fasterq-dump "${N_DIR}/SRR7890827/" \
+    --outdir "${N_DIR}" \
+    --split-files \
+    --threads 16 \
+    --temp "${N_DIR}" \
+    --progress
+
 mv "${N_DIR}/SRR7890827_1.fastq" "${N_DIR}/normal_R1.fastq"
 mv "${N_DIR}/SRR7890827_2.fastq" "${N_DIR}/normal_R2.fastq"
 gzip "${N_DIR}/normal_R1.fastq" "${N_DIR}/normal_R2.fastq"
+echo "Normal FASTQ ready."
 
 echo "========================================="
-echo "STEP 2: Aligning Reads with BWA-MEM..."
+echo "STEP 4: Aligning Reads with BWA-MEM..."
 echo "========================================="
+
 echo "Aligning Normal Sample..."
-sudo docker run --rm -v $(pwd):/workspace -w /workspace broadinstitute/gatk:4.6.0.0 \
+sudo docker run --rm -v $(pwd):/workspace -w /workspace biocontainers/bwa:v0.7.17_cv1 \
     bwa mem -t 16 -R '@RG\tID:normal\tSM:normal\tPL:ILLUMINA' \
     "${REF}" "${N_DIR}/normal_R1.fastq.gz" "${N_DIR}/normal_R2.fastq.gz" | \
 sudo docker run --rm -i -v $(pwd):/workspace -w /workspace broadinstitute/gatk:4.6.0.0 \
     samtools sort -@ 16 -o "${N_DIR}/normal_sorted.bam" -
 
 echo "Aligning Tumor Sample..."
-sudo docker run --rm -v $(pwd):/workspace -w /workspace broadinstitute/gatk:4.6.0.0 \
+sudo docker run --rm -v $(pwd):/workspace -w /workspace biocontainers/bwa:v0.7.17_cv1 \
     bwa mem -t 16 -R '@RG\tID:tumor\tSM:tumor\tPL:ILLUMINA' \
     "${REF}" "${T_DIR}/tumor_R1.fastq.gz" "${T_DIR}/tumor_R2.fastq.gz" | \
 sudo docker run --rm -i -v $(pwd):/workspace -w /workspace broadinstitute/gatk:4.6.0.0 \
     samtools sort -@ 16 -o "${T_DIR}/tumor_sorted.bam" -
 
 echo "========================================="
-echo "STEP 3: Marking Duplicates (Picard)..."
+echo "STEP 5: Marking Duplicates (Picard)..."
 echo "========================================="
+
 sudo docker run --rm -v $(pwd):/workspace -w /workspace broadinstitute/gatk:4.6.0.0 \
     gatk MarkDuplicates \
     -I "${N_DIR}/normal_sorted.bam" \
@@ -65,8 +104,9 @@ sudo docker run --rm -v $(pwd):/workspace -w /workspace broadinstitute/gatk:4.6.
     --CREATE_INDEX true
 
 echo "========================================="
-echo "STEP 4: Somatic Variant Calling (Mutect2)..."
+echo "STEP 6: Somatic Variant Calling (Mutect2)..."
 echo "========================================="
+
 sudo docker run --rm -v $(pwd):/workspace -w /workspace broadinstitute/gatk:4.6.0.0 \
     gatk --java-options "-Xmx24g" Mutect2 \
     -R "${REF}" \
@@ -76,8 +116,9 @@ sudo docker run --rm -v $(pwd):/workspace -w /workspace broadinstitute/gatk:4.6.
     -O "${OUT_DIR}/somatic_variants.vcf"
 
 echo "========================================="
-echo "STEP 5: Filtering Mutect2 Calls..."
+echo "STEP 7: Filtering Mutect2 Calls..."
 echo "========================================="
+
 sudo docker run --rm -v $(pwd):/workspace -w /workspace broadinstitute/gatk:4.6.0.0 \
     gatk FilterMutectCalls \
     -R "${REF}" \
@@ -86,4 +127,5 @@ sudo docker run --rm -v $(pwd):/workspace -w /workspace broadinstitute/gatk:4.6.
 
 echo "========================================="
 echo "PIPELINE COMPLETE!"
+echo "Output: ${OUT_DIR}/somatic_filtered.vcf"
 echo "========================================="
