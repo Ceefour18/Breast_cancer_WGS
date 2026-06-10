@@ -16,14 +16,16 @@ fi
 
 # Tumor: HCC1395 breast cancer WGS (SRR7890824)
 echo "Downloading tumor sample (SRR7890824)..."
-fasterq-dump SRR7890824 --outdir "${T_DIR}" --split-files --threads 16 --location AWS
+prefetch SRR7890824 --location AWS --progress -O "${T_DIR}"
+fasterq-dump "${T_DIR}/SRR7890824/SRR7890824.sra" --outdir "${T_DIR}" --split-files --threads 16
 mv "${T_DIR}/SRR7890824_1.fastq" "${T_DIR}/tumor_R1.fastq"
 mv "${T_DIR}/SRR7890824_2.fastq" "${T_DIR}/tumor_R2.fastq"
 gzip "${T_DIR}/tumor_R1.fastq" "${T_DIR}/tumor_R2.fastq"
 
 # Normal: HCC1395BL matched normal WGS (SRR7890827)
 echo "Downloading normal sample (SRR7890827)..."
-fasterq-dump SRR7890827 --outdir "${N_DIR}" --split-files --threads 16 --location AWS
+prefetch SRR7890827 --location AWS --progress -O "${N_DIR}"
+fasterq-dump "${N_DIR}/SRR7890827/SRR7890827.sra" --outdir "${N_DIR}" --split-files --threads 16
 mv "${N_DIR}/SRR7890827_1.fastq" "${N_DIR}/normal_R1.fastq"
 mv "${N_DIR}/SRR7890827_2.fastq" "${N_DIR}/normal_R2.fastq"
 gzip "${N_DIR}/normal_R1.fastq" "${N_DIR}/normal_R2.fastq"
@@ -66,7 +68,7 @@ echo "========================================="
 echo "STEP 4: Somatic Variant Calling (Mutect2)..."
 echo "========================================="
 sudo docker run --rm -v $(pwd):/workspace -w /workspace broadinstitute/gatk:4.6.0.0 \
-    gatk Mutect2 \
+    gatk --java-options "-Xmx24g" Mutect2 \
     -R "${REF}" \
     -I "${T_DIR}/tumor_dedup.bam" \
     -I "${N_DIR}/normal_dedup.bam" \
