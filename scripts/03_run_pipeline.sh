@@ -5,70 +5,28 @@ REF="data/ref/Homo_sapiens_assembly38.fasta"
 T_DIR="data/tumor"
 N_DIR="data/normal"
 OUT_DIR="data/output"
+KNOWN_SITES_DIR="data/ref"
 
 echo "========================================="
-echo "STEP 1: Installing SRA Toolkit from NCBI..."
-echo "========================================="
-if ! command -v fasterq-dump &>/dev/null; then
-    wget -q https://ftp-trace.ncbi.nlm.nih.gov/sra/sdk/current/sratoolkit.current-ubuntu64.tar.gz -O /tmp/sratoolkit.tar.gz
-    tar -xzf /tmp/sratoolkit.tar.gz -C /tmp
-    sudo cp /tmp/sratoolkit*/bin/* /usr/local/bin/
-fi
-
-echo "========================================="
-echo "STEP 2: Pulling Docker Images..."
+echo "STEP 1: Pulling Docker Images..."
 echo "========================================="
 sudo docker pull biocontainers/bwa:v0.7.17_cv1
 sudo docker pull broadinstitute/gatk:4.6.0.0
 
 echo "========================================="
-echo "STEP 3: Downloading HCC1395 WGS FASTQs..."
+echo "STEP 2: Downloading Known Variant Sites for BQSR..."
 echo "========================================="
-
-# Tumor: HCC1395 breast cancer WGS (SRR7890824, ~64GB)
-echo "Prefetching tumor sample (SRR7890824)..."
-prefetch SRR7890824 \
-    --location AWS \
-    --progress \
-    -O "${T_DIR}" \
-    --max-size 100GB
-
-echo "Converting tumor SRA to FASTQ..."
-fasterq-dump "${T_DIR}/SRR7890824/" \
-    --outdir "${T_DIR}" \
-    --split-files \
-    --threads 16 \
-    --temp "${T_DIR}" \
-    --progress
-
-mv "${T_DIR}/SRR7890824_1.fastq" "${T_DIR}/tumor_R1.fastq"
-mv "${T_DIR}/SRR7890824_2.fastq" "${T_DIR}/tumor_R2.fastq"
-gzip "${T_DIR}/tumor_R1.fastq" "${T_DIR}/tumor_R2.fastq"
-echo "Tumor FASTQ ready."
-
-# Normal: HCC1395BL matched normal WGS (SRR7890827, ~70GB)
-echo "Prefetching normal sample (SRR7890827)..."
-prefetch SRR7890827 \
-    --location AWS \
-    --progress \
-    -O "${N_DIR}" \
-    --max-size 100GB
-
-echo "Converting normal SRA to FASTQ..."
-fasterq-dump "${N_DIR}/SRR7890827/" \
-    --outdir "${N_DIR}" \
-    --split-files \
-    --threads 16 \
-    --temp "${N_DIR}" \
-    --progress
-
-mv "${N_DIR}/SRR7890827_1.fastq" "${N_DIR}/normal_R1.fastq"
-mv "${N_DIR}/SRR7890827_2.fastq" "${N_DIR}/normal_R2.fastq"
-gzip "${N_DIR}/normal_R1.fastq" "${N_DIR}/normal_R2.fastq"
-echo "Normal FASTQ ready."
+aws s3 cp s3://broad-references/hg38/v0/Homo_sapiens_assembly38.dbsnp138.vcf \
+    "${KNOWN_SITES_DIR}/dbsnp138.vcf" --no-sign-request
+aws s3 cp s3://broad-references/hg38/v0/Homo_sapiens_assembly38.dbsnp138.vcf.idx \
+    "${KNOWN_SITES_DIR}/dbsnp138.vcf.idx" --no-sign-request
+aws s3 cp s3://broad-references/hg38/v0/Mills_and_1000G_gold_standard.indels.hg38.vcf.gz \
+    "${KNOWN_SITES_DIR}/mills_indels.vcf.gz" --no-sign-request
+aws s3 cp s3://broad-references/hg38/v0/Mills_and_1000G_gold_standard.indels.hg38.vcf.gz.tbi \
+    "${KNOWN_SITES_DIR}/mills_indels.vcf.gz.tbi" --no-sign-request
 
 echo "========================================="
-echo "STEP 4: Aligning Reads with BWA-MEM..."
+echo "STEP 3: Aligning Reads with BWA-MEM..."
 echo "========================================="
 
 echo "Aligning Normal Sample..."
@@ -86,7 +44,7 @@ sudo docker run --rm -i -v $(pwd):/workspace -w /workspace broadinstitute/gatk:4
     samtools sort -@ 16 -o "${T_DIR}/tumor_sorted.bam" -
 
 echo "========================================="
-echo "STEP 5: Marking Duplicates (Picard)..."
+echo "STEP 4: Marking Duplicates (Picard)..."
 echo "========================================="
 
 sudo docker run --rm -v $(pwd):/workspace -w /workspace broadinstitute/gatk:4.6.0.0 \
@@ -104,14 +62,52 @@ sudo docker run --rm -v $(pwd):/workspace -w /workspace broadinstitute/gatk:4.6.
     --CREATE_INDEX true
 
 echo "========================================="
+echo "STEP 5: Base Quality Score Recalibration (BQSR)..."
+echo "========================================="
+
+# Normal - BaseRecalibrator
+sudo docker run --rm -v $(pwd):/workspace -w /workspace broadinstitute/gatk:4.6.0.0 \
+    gatk --java-options "-Xmx24g" BaseRecalibrator \
+    -I "${N_DIR}/normal_dedup.bam" \
+    -R "${REF}" \
+    --known-sites "${KNOWN_SITES_DIR}/dbsnp138.vcf" \
+    --known-sites "${KNOWN_SITES_DIR}/mills_indels.vcf.gz" \
+    -O "${N_DIR}/normal_recal.table"
+
+# Normal - ApplyBQSR
+sudo docker run --rm -v $(pwd):/workspace -w /workspace broadinstitute/gatk:4.6.0.0 \
+    gatk --java-options "-Xmx24g" ApplyBQSR \
+    -I "${N_DIR}/normal_dedup.bam" \
+    -R "${REF}" \
+    --bqsr-recal-file "${N_DIR}/normal_recal.table" \
+    -O "${N_DIR}/normal_bqsr.bam"
+
+# Tumor - BaseRecalibrator
+sudo docker run --rm -v $(pwd):/workspace -w /workspace broadinstitute/gatk:4.6.0.0 \
+    gatk --java-options "-Xmx24g" BaseRecalibrator \
+    -I "${T_DIR}/tumor_dedup.bam" \
+    -R "${REF}" \
+    --known-sites "${KNOWN_SITES_DIR}/dbsnp138.vcf" \
+    --known-sites "${KNOWN_SITES_DIR}/mills_indels.vcf.gz" \
+    -O "${T_DIR}/tumor_recal.table"
+
+# Tumor - ApplyBQSR
+sudo docker run --rm -v $(pwd):/workspace -w /workspace broadinstitute/gatk:4.6.0.0 \
+    gatk --java-options "-Xmx24g" ApplyBQSR \
+    -I "${T_DIR}/tumor_dedup.bam" \
+    -R "${REF}" \
+    --bqsr-recal-file "${T_DIR}/tumor_recal.table" \
+    -O "${T_DIR}/tumor_bqsr.bam"
+
+echo "========================================="
 echo "STEP 6: Somatic Variant Calling (Mutect2)..."
 echo "========================================="
 
 sudo docker run --rm -v $(pwd):/workspace -w /workspace broadinstitute/gatk:4.6.0.0 \
     gatk --java-options "-Xmx24g" Mutect2 \
     -R "${REF}" \
-    -I "${T_DIR}/tumor_dedup.bam" \
-    -I "${N_DIR}/normal_dedup.bam" \
+    -I "${T_DIR}/tumor_bqsr.bam" \
+    -I "${N_DIR}/normal_bqsr.bam" \
     -normal normal \
     -O "${OUT_DIR}/somatic_variants.vcf"
 
